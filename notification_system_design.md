@@ -476,3 +476,32 @@ function process_push_queue():
         except PushConnectionError:
             nack(msg, requeue=True)
 ```
+
+## Stage 6
+
+### Priority Inbox Implementation Approach
+
+The product manager requested a "Priority Inbox" that always displays the top `n` most important unread notifications first, ordered by priority weight (`Placement` > `Result` > `Event`) and then by recency (timestamp).
+
+**Implementation Details:**
+1. A Node.js script (`stage6.js`) was created within the `notification_app_be/src` directory.
+2. The script fetches the live data from the protected `evaluation-service/notifications` API using the provided JWT token.
+3. It maps each notification type to a numeric weight (`Placement: 3, Result: 2, Event: 1`).
+4. It sorts the array of notifications based on this weight (descending). If two notifications have the same weight, it falls back to sorting by the `Timestamp` (descending, meaning most recent first).
+5. It then slices the array to extract the top 10 notifications and displays them in a formatted console table.
+
+### Maintaining Top 10 Efficiently with Continuous Live Data
+
+As new notifications stream into the system continuously (e.g., via WebSockets), re-sorting the entire list of a student's unread notifications every time a new one arrives is computationally expensive ($O(N \log N)$).
+
+**Optimal Solution: Min-Heap (Priority Queue)**
+To maintain the top 10 efficiently on the client-side or caching layer, we should use a **Min-Heap** of size $K$ (where $K = 10$).
+
+**Algorithm:**
+1. Maintain a Min-Heap of the top 10 notifications, where the "minimum" element is the *least* important notification currently in the top 10 (i.e., lowest weight, or oldest timestamp if weights are equal).
+2. When a new notification arrives, compare it to the root of the Min-Heap (the 10th most important notification).
+3. If the new notification is **more important** than the root, pop the root and insert the new notification.
+4. If it is **less important**, simply ignore it for the top 10 view.
+
+**Complexity:** 
+Extracting the minimum and inserting a new element into a heap of size 10 takes $O(\log K)$ time. Since $K = 10$ is a constant, the operation essentially executes in **$O(1)$ constant time** per new notification. This guarantees high performance without needing to re-sort arrays or heavily hit the database.
