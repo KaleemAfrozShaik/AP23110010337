@@ -1,8 +1,11 @@
+import { Log } from '../../logging_middleware/src/logger.js';
+
 const url = 'http://20.207.122.201/evaluation-service/notifications';
 const token = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJNYXBDbGFpbXMiOnsiYXVkIjoiaHR0cDovLzIwLjI0NC41Ni4xNDQvZXZhbHVhdGlvbi1zZXJ2aWNlIiwiZW1haWwiOiJrYWxlZW1hZnJvel9zaGFpa0Bzcm1hcC5lZHUuaW4iLCJleHAiOjE3Nzc3MDMyNTMsImlhdCI6MTc3NzcwMjM1MywiaXNzIjoiQWZmb3JkIE1lZGljYWwgVGVjaG5vbG9naWVzIFByaXZhdGUgTGltaXRlZCIsImp0aSI6ImIxYTJkYjY1LTgzZTEtNGVjZS1iYjQyLTE2MjU5ZTIzMTBhNiIsImxvY2FsZSI6ImVuLUlOIiwibmFtZSI6ImthbGVlbSBhZnJveiBzaGFpayIsInN1YiI6IjAxZTk5NTVjLTQyYjYtNDhjMi04NmY4LTU1ZjUzNDQ5YzA4MyJ9LCJlbWFpbCI6ImthbGVlbWFmcm96X3NoYWlrQHNybWFwLmVkdS5pbiIsIm5hbWUiOiJrYWxlZW0gYWZyb3ogc2hhaWsiLCJyb2xsTm8iOiJhcDIzMTEwMDEwMzM3IiwiYWNjZXNzQ29kZSI6IlFrYnB4SCIsImNsaWVudElEIjoiMDFlOTk1NWMtNDJiNi00OGMyLTg2ZjgtNTVmNTM0NDljMDgzIiwiY2xpZW50U2VjcmV0IjoiRGR4eXdkWEFOYmN0aHNtViJ9.z3-0_lxJg4TajdIYU3ZiFb2NqlCsG_kf8l4cNrzmmhw';
 
 async function fetchPriorityNotifications() {
     try {
+        await Log('backend', 'info', 'service', 'Fetching priority notifications');
         // Try Bearer token first
         let response = await fetch(url, {
             headers: {
@@ -21,6 +24,7 @@ async function fetchPriorityNotifications() {
 
         if (!response.ok) {
             console.error('Failed to fetch:', response.status, await response.text());
+            await Log('backend', 'error', 'handler', `Failed to fetch notifications: ${response.status}`);
             return;
         }
 
@@ -53,9 +57,11 @@ async function fetchPriorityNotifications() {
         const top10 = notifications.slice(0, 10);
         console.log(`Top 10 Priority Notifications:\n`);
         console.table(top10, ['Type', 'Message', 'Timestamp', 'ID']);
+        await Log('backend', 'info', 'service', 'Successfully ranked top 10 notifications');
 
     } catch (err) {
         console.error('Error fetching notifications:', err);
+        await Log('backend', 'error', 'handler', 'Error in notification ranking: ' + err.message);
     }
 }
 
