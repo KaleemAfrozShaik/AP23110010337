@@ -404,3 +404,75 @@ If a user must pull their notifications (e.g., initial login or a hard refresh),
 2. **Persistence**: Client stores these notifications in its **local state** (Context/Redux).
 3. **Navigation**: Page transitions within the app use the local state, resulting in **zero** API calls.
 4. **Updates**: A **WebSocket** connection pushes new notifications silently to the client's local state, updating the UI badge instantly without a database poll.
+
+## Stage 5
+
+### Shortcomings of the Current Implementation
+
+**Original Pseudocode:**
+```python
+function notify_all(student_ids: array, message: string):
+    for student_id in student_ids:
+        send_email(student_id, message) # calls Email API
+        save_to_db(student_id, message) # DB insert
+        push_to_app(student_id, message) # WebSocket push
+```
+
+**Observed Shortcomings:**
+1. **Synchronous Blocking Execution**: Processing 50,000 students sequentially in a single thread is highly inefficient. If `send_email` takes even 100ms per student, the total operation will take over 80 minutes. The HTTP request initiated by the HR will inevitably timeout, resulting in an uncertain state.
+2. **Tight Coupling and Shared Failure Domains**: The Database Insert, Email API, and App Push are tightly coupled. If the external Email API goes down or rate-limits the application, the loop might crash. This means the notification won't even be saved to the database or pushed to the app for the remaining students.
+3. **Lack of Fault Tolerance and Retries**: As observed with the 200 failed students, there is no mechanism to automatically retry the failed `send_email` calls without affecting the rest of the batch. Recovering from a mid-loop crash requires manual log parsing and custom scripts.
+
+### Should DB Save and Email Sending Happen Together?
+
+**No, they should NOT happen together synchronously.**
+- **Why**: Saving to a database is an internal, fast, and highly reliable operation (microseconds/milliseconds). Sending an email relies on an external third-party API over the network, which is slow, unreliable, and subject to rate limits. Tying them together means the fast system (DB) is bottlenecked by the slow system (Email API). They must be decoupled to ensure that an email failure doesn't prevent the notification from appearing in the user's application dashboard.
+
+### Redesigning for Reliability and Speed
+
+To redesign this, we need to transition to an **Event-Driven Architecture** utilizing an asynchronous **Message Queue** (e.g., RabbitMQ, Kafka, AWS SQS) and background worker processes.
+
+**The Strategy:**
+1. **Fast API Response**: The `notify_all` function should perform a bulk insert into the database (very fast) and push the 50,000 tasks into a message queue. It then immediately returns a success response to the HR frontend.
+2. **Independent Workers**: Separate background worker processes will consume messages from the queues to handle the slow tasks (`send_email` and `push_to_app`) concurrently and independently.
+3. **Automatic Retries**: If an email fails for a specific student, the worker simply negatively acknowledges (NACKs) the message. The queue will automatically retry it with exponential backoff without affecting the rest of the system or dropping the message.
+
+### Revised Pseudocode
+
+```python
+# API Handler (Executed when HR clicks "Notify All")
+function notify_all(student_ids: array, message: string):
+    # 1. Decoupled, fast bulk insert to the database
+    bulk_save_to_db(student_ids, message)
+    
+    # 2. Publish individual tasks to Message Queues
+    for student_id in student_ids:
+        enqueue_message("email_queue", student_id, message)
+        enqueue_message("push_queue", student_id, message)
+        
+    # 3. Immediate response to HR
+    return { status: 200, message: "Notifications queued successfully for processing." }
+
+# ---------------------------------------------------------
+# Background Worker: Email Delivery (Scales horizontally)
+# ---------------------------------------------------------
+function process_email_queue():
+    while msg = consume("email_queue"):
+        try:
+            send_email(msg.student_id, msg.message)
+            ack(msg) # Acknowledge success to remove from queue
+        except RateLimitError, NetworkError:
+            # Requeue with exponential backoff for the 200 failed students
+            nack(msg, requeue=True) 
+
+# ---------------------------------------------------------
+# Background Worker: Real-Time App Push (Scales horizontally)
+# ---------------------------------------------------------
+function process_push_queue():
+    while msg = consume("push_queue"):
+        try:
+            push_to_app(msg.student_id, msg.message)
+            ack(msg)
+        except PushConnectionError:
+            nack(msg, requeue=True)
+```
