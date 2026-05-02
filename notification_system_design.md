@@ -366,3 +366,41 @@ WHERE notificationType = 'Placement'
   AND createdAt >= NOW() - INTERVAL 7 DAY;
 ```
 *(Note: Syntax for `INTERVAL 7 DAY` is typical for MySQL. In PostgreSQL, it would be `CURRENT_DATE - INTERVAL '7 days'` or `NOW() - INTERVAL '7 days'`.)*
+
+## Stage 4
+
+### Performance Optimization for Notification Fetching
+
+**The Problem:**
+Fetching notifications synchronously on every page load for every student causes an extremely high volume of read operations. This essentially creates an accidental DDoS effect, overwhelming the database and causing severe latency and a poor user experience.
+
+**Suggested Solutions & Strategies:**
+
+To resolve this issue, I recommend a multi-layered approach combining **Client-Side State Management**, **Real-Time Push (WebSockets)**, and **In-Memory Caching**.
+
+#### 1. Client-Side Caching (LocalStorage / Context API / Redux)
+**How it improves performance:**
+When the Single Page Application (SPA) first loads, it fetches the notifications and stores them in memory (like Redux or Context API) or persistently in the browser (LocalStorage). As the student navigates between pages, the UI renders the cached local data instantly without making any backend API requests.
+**Tradeoffs:**
+- *Pros*: Zero latency during client-side navigation. Absolutely zero backend load for subsequent page views. Easy to implement in modern frontend frameworks.
+- *Cons*: Data is isolated to a single browser. If a student marks a notification as read on their mobile app, their desktop browser cache will be stale until the next hard refresh or a WebSocket event synchronizes it.
+
+#### 2. Real-Time Push Mechanism (WebSockets / SSE)
+**How it improves performance:**
+Instead of the client requesting data on every navigation (Pull model), the server maintains a persistent connection and actively pushes new notifications to the client only when they occur (Push model).
+**Tradeoffs:**
+- *Pros*: Completely eliminates repetitive DB polling. Provides instantaneous real-time updates for a superior UX. Greatly reduces HTTP request overhead.
+- *Cons*: Requires stateful servers to manage persistent connections. Scaling WebSockets requires sticky sessions or a pub/sub backplane (like Redis Pub/Sub). More complex to implement connection retries and fallbacks.
+
+#### 3. Distributed In-Memory Caching (Redis / Memcached)
+**How it improves performance:**
+If a user must pull their notifications (e.g., initial login or a hard refresh), the API should fetch them from a fast in-memory cache (Redis) rather than querying the primary database. The database is only queried on a cache miss, after which the cache is populated.
+**Tradeoffs:**
+- *Pros*: Sub-millisecond read latency. Protects the primary database from sudden read spikes. Highly scalable.
+- *Cons*: Cache invalidation can be tricky (e.g., ensuring the cache is updated synchronously when a notification is marked as read). Adds additional infrastructure cost and complexity to the backend architecture.
+
+### Recommended Implementation Flow
+1. **Initial Load**: Client hits the REST API. The API serves the recent notifications from **Redis** (falling back to the DB only if missing).
+2. **Persistence**: Client stores these notifications in its **local state** (Context/Redux).
+3. **Navigation**: Page transitions within the app use the local state, resulting in **zero** API calls.
+4. **Updates**: A **WebSocket** connection pushes new notifications silently to the client's local state, updating the UI badge instantly without a database poll.
