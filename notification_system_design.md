@@ -305,3 +305,64 @@ db.notifications.deleteOne({
   userId: "123e4567-e89b-12d3-a456-426614174000"
 });
 ```
+
+## Stage 3
+
+### Relational Database Query Analysis
+
+**Original Query:**
+```sql
+SELECT * FROM notifications 
+WHERE studentID = 1042 AND isRead = false
+ORDER BY createdAt DESC;
+```
+
+**1. Is this query accurate?**
+Logically, yes. It correctly filters for unread notifications belonging to a specific student and sorts them by the most recent. However, using `SELECT *` is considered an anti-pattern in production because it fetches all columns, wasting memory and network bandwidth. Furthermore, it lacks a `LIMIT` clause, meaning it could return thousands of rows for a single student, which is rarely needed for a user interface.
+
+**2. Why is this slow?**
+The database has grown to 5,000,000 notifications. If there is no specific index covering `(studentID, isRead, createdAt)`, the database will perform either a **full table scan** (O(N) complexity) to find matching rows, or a partial index scan followed by an expensive **filesort** operation to order the results by `createdAt`. Sorting millions of unindexed rows on disk/memory is highly intensive and slow.
+
+**3. What would you change and what would be the likely computation cost?**
+**Changes:**
+- Replace `SELECT *` with explicit columns needed by the client (e.g., `SELECT id, title, message, createdAt`).
+- Add pagination using `LIMIT` and `OFFSET`.
+- Create a composite B-Tree index on `(studentID, isRead, createdAt DESC)`.
+
+**Optimized Query:**
+```sql
+SELECT id, title, message, createdAt 
+FROM notifications 
+WHERE studentID = 1042 AND isRead = false
+ORDER BY createdAt DESC
+LIMIT 20;
+```
+
+**Likely Computation Cost:**
+With the composite index, the database can directly jump to the exact location of the `studentID` and `isRead` matches. Since the index is already sorted by `createdAt DESC`, the database can just read the first 20 index entries sequentially. The cost drops significantly from $O(N)$ (or $O(N \log N)$ for sorting) to $O(\log N)$ for the index B-tree traversal plus an $O(1)$ constant time for reading the limit block. It becomes an extremely fast, sub-millisecond operation.
+
+---
+
+### Analysis of Adding Indexes to Every Column
+
+**Is this advice effective?**
+**No, it is highly ineffective and dangerous.**
+
+**Why / Why not?**
+1. **Write Performance Degradation**: Every time a row is inserted, updated, or deleted, the database must synchronously update *every single index*. In a write-heavy notification system, this will cause severe write bottlenecks and high CPU/Disk I/O usage.
+2. **Storage and Memory Cost**: Indexes consume significant disk space. If every column is indexed, the index size could exceed the actual table data size. Furthermore, large indexes will evict useful operational data from the RAM (buffer pool), leading to cache misses and slower reads.
+3. **Query Optimizer Confusion**: Having too many overlapping or single-column indexes can confuse the database query optimizer, causing it to choose suboptimal execution plans instead of using proper composite indexes.
+
+---
+
+### Placement Notification Query
+
+**Write a query to find all students who got a placement notification in the last 7 days:**
+
+```sql
+SELECT DISTINCT studentID 
+FROM notifications 
+WHERE notificationType = 'Placement' 
+  AND createdAt >= NOW() - INTERVAL 7 DAY;
+```
+*(Note: Syntax for `INTERVAL 7 DAY` is typical for MySQL. In PostgreSQL, it would be `CURRENT_DATE - INTERVAL '7 days'` or `NOW() - INTERVAL '7 days'`.)*
